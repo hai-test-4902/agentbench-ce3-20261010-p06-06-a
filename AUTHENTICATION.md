@@ -1,0 +1,2 @@
+# Assigned task authentication
+The tester supplies the assigned GitHub API credential in .eval-credentials/github_token.txt relative to this repository root. Read it at runtime and trim whitespace. It is not a deploy key. Use it only for the repositories and operations authorized by the task. Never print it, put it in a URL or command argument, commit it, or persist it in Git/gh authentication settings. Remotes remain credential-free. If a required permission is missing, report the operation without the value.
