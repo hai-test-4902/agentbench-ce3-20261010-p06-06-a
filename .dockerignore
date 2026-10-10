@@ -1,0 +1,8 @@
+# Allow-list: only what the image build needs is sent to the daemon.
+*
+!pyproject.toml
+!README.md
+!requirements/
+!src/
+**/__pycache__
+**/*.pyc

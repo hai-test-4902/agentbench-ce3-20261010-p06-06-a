@@ -1,0 +1,9 @@
+{
+  "recorded_at": "2026-10-10T23:46:09Z",
+  "requests": {
+    "usgs_all_hour.geojson": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+    "usgs_2.5_day.geojson": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson",
+    "emsc_hour.json": "https://www.seismicportal.eu/fdsnws/event/1/query?format=json&start=2026-10-10T22%3A46%3A09&orderby=time&limit=5000&offset=1",
+    "emsc_day_minmag2.5.json": "https://www.seismicportal.eu/fdsnws/event/1/query?format=json&start=2026-10-09T23%3A46%3A09&orderby=time&limit=5000&offset=1&minmag=2.5"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "images": [
+    {
+      "image": "python@sha256:6ff506466f8b1e981719b468cc0023b8ef000b983cdec0eafe119d01f379e31d",
+      "python": "3.10",
+      "tag": "python:3.10-slim"
+    },
+    {
+      "image": "python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce",
+      "python": "3.11",
+      "tag": "python:3.11-slim"
+    },
+    {
+      "image": "python@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
+      "python": "3.12",
+      "tag": "python:3.12-slim"
+    }
+  ],
+  "runner": "local Docker; no GitHub Actions"
+}

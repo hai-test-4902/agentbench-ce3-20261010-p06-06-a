@@ -7,3 +7,17 @@ node_modules/
 artifacts/
 state/
 *.pid
+
+# quakewatch local tooling / build output
+.cache/
+.tools/
+dist/
+build/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

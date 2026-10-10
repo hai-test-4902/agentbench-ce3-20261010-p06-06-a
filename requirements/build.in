@@ -1,0 +1,5 @@
+# Build backend and frontend, pinned so builds do not resolve at build time.
+build>=1.2
+hatchling>=1.25
+# hatchling needs this for `pip install -e .`
+editables>=0.5
