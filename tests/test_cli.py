@@ -16,7 +16,7 @@ from quakewatch import __version__
 from quakewatch.cli import cli, main
 from quakewatch.geo import haversine_km
 from quakewatch.models import FIELD_NAMES, parse_iso_utc
-from quakewatch.output import EVENT_COLUMNS
+from quakewatch.output import EVENT_COLUMNS, MATCH_COLUMNS
 from quakewatch.sources import emsc
 from tests.conftest import RECORDED_AT, fixture_json, mock_emsc, mock_usgs
 
@@ -318,6 +318,148 @@ def test_export_unwritable_target_exits_1(
     assert "Error: cannot write blocker/quakes.csv" in result.output
 
 
+# -- compare ------------------------------------------------------------------------
+
+
+def parse_compare(output: str) -> tuple[dict[str, str], list[dict[str, str]]]:
+    summary_block, table_block = output.split("\n\n")
+    summary = dict(line.split("\t") for line in summary_block.splitlines())
+    return summary, list(csv.DictReader(table_block.splitlines(), delimiter="\t"))
+
+
+def test_compare_counts_and_magnitude_differences(runner: CliRunner, api: respx.MockRouter) -> None:
+    usgs_route = mock_usgs(api)
+    emsc_route = mock_emsc(api)
+    result = runner.invoke(cli, ["compare"])
+    assert result.exit_code == 0, result.output
+    summary, rows = parse_compare(result.output)
+    assert summary["window"] == "day"
+    assert (summary["max_seconds"], summary["max_km"]) == ("60", "50")
+    assert (summary["usgs_events"], summary["emsc_events"]) == (str(USGS_COUNT), str(EMSC_COUNT))
+    assert (summary["matched"], summary["usgs_only"], summary["emsc_only"]) == ("60", "3", "259")
+    assert int(summary["matched"]) + int(summary["usgs_only"]) == USGS_COUNT
+    assert int(summary["matched"]) + int(summary["emsc_only"]) == EMSC_COUNT
+    assert summary["mag_diff_pairs"] == "60"
+    assert summary["mag_diff_max_abs"] == "0.900"
+
+    assert tuple(rows[0]) == MATCH_COLUMNS
+    assert len(rows) == 60
+    for row in rows:
+        difference = float(row["usgs_mag"]) - float(row["emsc_mag"])
+        assert float(row["mag_diff"]) == pytest.approx(difference, abs=0.011)
+        assert abs(float(row["dt_s"])) <= 60
+        assert float(row["dist_km"]) <= 50
+    assert max(abs(float(row["mag_diff"])) for row in rows) == pytest.approx(0.9)
+
+    # It compares whole catalogues: the unfiltered USGS feed, no minmag sent to EMSC.
+    assert str(usgs_route.calls.last.request.url).endswith("/all_day.geojson")
+    assert "minmag" not in emsc_route.calls.last.request.url.params
+
+
+def test_compare_min_mag_filters_after_matching(runner: CliRunner, api: respx.MockRouter) -> None:
+    usgs_route = mock_usgs(api)
+    emsc_route = mock_emsc(api)
+    result = runner.invoke(cli, ["compare", "--min-mag", "4.5"])
+    assert result.exit_code == 0, result.output
+    summary, rows = parse_compare(result.output)
+    assert rows
+    assert int(summary["matched"]) == len(rows) < 60
+    # A pair is kept when either report reaches the threshold ...
+    assert all(max(float(r["usgs_mag"]), float(r["emsc_mag"])) >= 4.5 for r in rows)
+    # ... and the recording has pairs the two agencies put on opposite sides of it.
+    assert any(min(float(r["usgs_mag"]), float(r["emsc_mag"])) < 4.5 for r in rows)
+    assert str(usgs_route.calls.last.request.url).endswith("/all_day.geojson")
+    assert "minmag" not in emsc_route.calls.last.request.url.params
+
+
+def test_compare_near_filter(runner: CliRunner, api: respx.MockRouter) -> None:
+    mock_usgs(api)
+    mock_emsc(api)
+    result = runner.invoke(cli, ["compare", "--near", "7.6,-80.4", "--radius-km", "150"])
+    assert result.exit_code == 0, result.output
+    summary, rows = parse_compare(result.output)
+    assert rows
+    assert 0 < int(summary["matched"]) < 60
+    assert all("Panama" in row["place"] for row in rows)
+
+
+def test_compare_tolerance_options(runner: CliRunner, api: respx.MockRouter) -> None:
+    mock_usgs(api)
+    mock_emsc(api)
+    strict = runner.invoke(cli, ["compare", "--max-seconds", "0.5", "--max-km", "1"])
+    assert strict.exit_code == 0, strict.output
+    summary, rows = parse_compare(strict.output)
+    assert (summary["max_seconds"], summary["max_km"]) == ("0.5", "1")
+    assert 0 < len(rows) < 60
+    assert all(abs(float(r["dt_s"])) <= 0.5 and float(r["dist_km"]) <= 1 for r in rows)
+
+
+def test_compare_rich_on_a_tty(
+    runner: CliRunner, api: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_usgs(api)
+    mock_emsc(api)
+    monkeypatch.setattr("quakewatch.cli.stdout_is_tty", lambda: True)
+    monkeypatch.setenv("COLUMNS", "160")
+    result = runner.invoke(cli, ["compare", "--min-mag", "5"])
+    assert result.exit_code == 0, result.output
+    assert "USGS vs EMSC, past day" in result.output
+    assert "Matched (reported by both)" in result.output
+    assert "Matched events" in result.output
+    assert "\t" not in result.output
+
+
+def test_compare_uses_the_cache(runner: CliRunner, api: respx.MockRouter) -> None:
+    usgs_route = mock_usgs(api)
+    emsc_route = mock_emsc(api)
+    first = runner.invoke(cli, ["compare"])
+    second = runner.invoke(cli, ["compare", "--min-mag", "5"])  # same downloads, different filter
+    assert first.exit_code == second.exit_code == 0
+    assert (usgs_route.call_count, emsc_route.call_count) == (1, 1)
+    third = runner.invoke(cli, ["compare", "--no-cache"])
+    assert third.exit_code == 0
+    assert third.output == first.output
+    assert (usgs_route.call_count, emsc_route.call_count) == (2, 2)
+
+
+def test_compare_with_one_empty_catalogue(runner: CliRunner, api: respx.MockRouter) -> None:
+    mock_usgs(api, "usgs_all_hour.geojson")
+    api.get(emsc.QUERY_URL).mock(return_value=httpx.Response(204))
+    result = runner.invoke(cli, ["compare", "--window", "hour"])
+    assert result.exit_code == 0, result.output
+    summary, rows = parse_compare(result.output)
+    assert (summary["usgs_events"], summary["emsc_events"]) == ("7", "0")
+    assert (summary["matched"], summary["usgs_only"], summary["emsc_only"]) == ("0", "7", "0")
+    assert summary["mag_diff_pairs"] == "0"
+    assert rows == []
+
+
+def test_compare_upstream_failure_exits_1(runner: CliRunner, api: respx.MockRouter) -> None:
+    api.get(url__regex=r".*earthquake\.usgs\.gov.*").mock(return_value=httpx.Response(404))
+    mock_emsc(api)
+    result = runner.invoke(cli, ["compare"])
+    assert result.exit_code == 1
+    assert "Error: USGS: HTTP 404" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["compare", "--source", "usgs"], "No such option"),
+        (["compare", "--max-seconds", "-1"], "--max-seconds"),
+        (["compare", "--max-km", "-5"], "--max-km"),
+        (["compare", "--radius-km", "10"], "--radius-km requires --near"),
+    ],
+)
+def test_compare_usage_errors(
+    runner: CliRunner, api: respx.MockRouter, args: list[str], message: str
+) -> None:
+    result = runner.invoke(cli, args)
+    assert result.exit_code == 2, result.output
+    assert message in result.output
+    assert not api.calls
+
+
 # -- entry points -------------------------------------------------------------------
 
 
@@ -330,7 +472,7 @@ def test_version(runner: CliRunner) -> None:
 def test_help_lists_commands(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["-h"])
     assert result.exit_code == 0
-    for name in ("list", "export"):
+    for name in ("list", "export", "compare"):
         assert name in result.output
 
 

@@ -19,9 +19,15 @@ from quakewatch.client import (
     SourceError,
     filter_events,
 )
+from quakewatch.compare import (
+    DEFAULT_MAX_KM,
+    DEFAULT_MAX_SECONDS,
+    filter_comparison,
+    match_events,
+)
 from quakewatch.geo import parse_lat_lon
 from quakewatch.models import SOURCE_CHOICES, WINDOWS, Event, SourceChoice, Window
-from quakewatch.output import render_events
+from quakewatch.output import render_comparison, render_events
 
 DEFAULT_RADIUS_KM = 100.0
 
@@ -292,6 +298,72 @@ def export_command(
     except OSError as error:
         raise click.ClickException(f"cannot write {output}: {error.strerror or error}") from error
     click.echo(f"Wrote {len(events)} event(s) to {output} ({resolved})")
+
+
+@cli.command("compare")
+@min_mag_option
+@window_option
+@near_options
+@click.option(
+    "--max-seconds",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_MAX_SECONDS,
+    show_default=True,
+    metavar="SECONDS",
+    help="Largest origin-time difference for two reports to count as one event.",
+)
+@click.option(
+    "--max-km",
+    type=click.FloatRange(min=0),
+    default=DEFAULT_MAX_KM,
+    show_default=True,
+    metavar="KM",
+    help="Largest epicentre separation for two reports to count as one event.",
+)
+@plain_option
+@cache_options
+def compare_command(
+    min_mag: float | None,
+    window: Window,
+    near: tuple[float, float] | None,
+    radius_km: float | None,
+    max_seconds: float,
+    max_km: float,
+    plain: bool,
+    no_cache: bool,
+    cache_ttl: float,
+    cache_dir: Path,
+    timeout: float,
+) -> None:
+    """Match USGS events against EMSC events and compare their magnitudes.
+
+    Two reports are the same earthquake when their origin times are within
+    --max-seconds and their epicentres within --max-km. Prints how many events
+    matched, how many each source has alone, and the USGS-minus-EMSC magnitude
+    difference for every matched pair.
+
+    --min-mag and --near are applied after matching: a pair is kept when either
+    source's report satisfies the filter, so an M4.6/M4.4 pair is not split by
+    --min-mag 4.5.
+    """
+    query = build_query(
+        min_mag=min_mag, window=window, source="both", near=near, radius_km=radius_km
+    )
+    with build_client(
+        no_cache=no_cache, cache_ttl=cache_ttl, cache_dir=cache_dir, timeout=timeout
+    ) as client:
+        try:
+            usgs_events = client.fetch("usgs", window)
+            emsc_events = client.fetch("emsc", window)
+        except SourceError as error:
+            raise click.ClickException(str(error)) from error
+    comparison = filter_comparison(
+        match_events(usgs_events, emsc_events, max_seconds=max_seconds, max_km=max_km),
+        min_mag=query.min_mag,
+        near=query.near,
+        radius_km=query.radius_km,
+    )
+    render_comparison(comparison, window=window, rich=use_rich(plain), stream=sys.stdout)
 
 
 def main() -> None:
