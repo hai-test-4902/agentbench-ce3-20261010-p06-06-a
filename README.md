@@ -49,13 +49,13 @@ $ quakewatch --help
 $ quakewatch list --help
 ```
 
-Options shared by every command:
+Options shared by the commands:
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--window hour\|day\|week` | `day` | how far back to look |
 | `--min-mag MAG` | none | minimum magnitude; events with no magnitude are dropped |
-| `--source usgs\|emsc\|both` | `both` | which catalogue(s) to query |
+| `--source usgs\|emsc\|both` | `both` | which catalogue(s) to query (`list` and `export`; `compare` always uses both) |
 | `--near LAT,LON` | none | only events near a point; negative values work as-is (`--near -33.45,-70.66`) |
 | `--radius-km KM` | `100` with `--near` | great-circle radius around `--near` |
 | `--no-cache` | off | neither read nor write the response cache |
@@ -125,6 +125,81 @@ $ quakewatch export --format json -o today.dat
 
 Times are ISO-8601 UTC with millisecond precision (`2026-10-10T05:32:01.250Z`).
 
+### `quakewatch compare`
+
+Answers "do the two agencies agree?". It downloads both catalogues for the
+window and pairs up reports of the same earthquake: two reports match when
+their origin times are within **±60 s** and their epicentres within **50 km**
+(`--max-seconds`, `--max-km` to change). Matching is one-to-one; in an
+aftershock sequence each report is paired with its closest counterpart in
+combined time and distance. It prints the matched and unmatched counts and the
+magnitude difference (USGS minus EMSC) of every matched pair.
+
+```console
+$ quakewatch compare --window day --min-mag 5
+               USGS vs EMSC, past day
+
+  USGS events                                    7
+  EMSC events                                    8
+  Matched (reported by both)                     7
+  Unmatched, USGS only                           0
+  Unmatched, EMSC only                           1
+  Pairs with both magnitudes                     7
+  Mean magnitude difference (USGS - EMSC)   -0.029
+  Mean absolute difference                   0.029
+  Median difference                         +0.000
+  Largest absolute difference                0.100
+
+ matched = origin times within 60 s and epicentres
+                    within 50 km
+                                                        Matched events
+
+  Time (UTC)            USGS   EMSC    Diff   dt s     km   Place                              USGS ID      EMSC ID
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  2026-10-10 21:34:02   5.30   5.30   +0.00   +0.9   10.9   southeast of Easter Island         us6000u1gs   20261010_0000379
+  2026-10-10 06:30:03   4.90   5.00   -0.10   -0.9    7.5   26 km SSE of Pedasí, Panama        us6000u1d7   20261010_0000112
+  2026-10-10 05:32:01   5.00   5.10   -0.10   +0.1   14.7   141 km E of Bitung, Indonesia      us6000u1cv   20261010_0000101
+  2026-10-10 04:14:01   6.00   6.00   +0.00   -0.3    5.0   7 km N of La Tronosa, Panama       us6000u1cf   20261010_0000077
+  2026-10-10 03:58:18   5.30   5.30   +0.00   +0.2    1.8   41 km NNE of Yigo Village, Guam    us6000u1cd   20261010_0000071
+  2026-10-10 02:26:32   5.10   5.10   +0.00   -0.9   11.2   1 km NNE of Tonosí, Panama         us6000u1bu   20261010_0000041
+  2026-10-10 02:00:42   5.10   5.10   +0.00   +0.5    5.5   133 km WNW of Ternate, Indonesia   us6000u1bs   20261010_0000036
+
+                                      7 matched pair(s); differences are USGS minus EMSC
+```
+
+`dt s` is the USGS origin time minus the EMSC origin time and `km` the distance
+between the two epicentres.
+
+`--min-mag` and `--near`/`--radius-km` are applied **after** matching, and a
+pair is kept when *either* report satisfies the filter. Filtering each catalogue
+first would split pairs that straddle the threshold - with `--min-mag 4.5`, an
+earthquake that USGS calls M4.6 and EMSC calls M4.4 would be miscounted as
+"USGS only". For the same reason `compare` always downloads the unfiltered
+catalogues, so it takes no `--source` option.
+
+When piped, the output is a `key<TAB>value` summary, a blank line, then one
+tab-separated row per matched pair:
+
+```console
+$ quakewatch compare --window day --min-mag 5 | head -16
+window	day
+max_seconds	60
+max_km	50
+usgs_events	7
+emsc_events	8
+matched	7
+usgs_only	0
+emsc_only	1
+mag_diff_pairs	7
+mag_diff_mean	-0.029
+mag_diff_mean_abs	0.029
+mag_diff_median	+0.000
+mag_diff_max_abs	0.100
+
+time_utc	usgs_mag	emsc_mag	mag_diff	dt_s	dist_km	usgs_id	emsc_id	place
+2026-10-10T21:34:02Z	5.30	5.30	+0.00	+0.9	10.9	us6000u1gs	20261010_0000379	southeast of Easter Island
+```
+
 ### Caching
 
 Decoded responses are stored as JSON files in `./.cache/quakewatch` (relative to
@@ -143,6 +218,12 @@ from quakewatch import QuakeClient, ResponseCache
 with QuakeClient(cache=ResponseCache(ttl_seconds=600)) as client:
     for event in client.events("both", "day", min_mag=5.0):
         print(event.time_iso, event.magnitude, event.place, event.source)
+
+    # the matching behind `quakewatch compare`
+    from quakewatch.compare import match_events
+
+    result = match_events(client.fetch("usgs", "day"), client.fetch("emsc", "day"))
+    print(len(result.matches), len(result.usgs_only), len(result.emsc_only))
 ```
 
 The package ships a `py.typed` marker and passes `mypy --strict`.
@@ -153,7 +234,14 @@ Things that will surprise you if you treat the two catalogues as interchangeable
 
 * **No shared identifier.** USGS ids are network-prefixed (`nc75447541`,
   `us6000u1cv`); EMSC ids are date-sequenced (`20261010_0000413`). The same
-  earthquake can only be paired up by origin time and location.
+  earthquake can only be paired up by origin time and location, which is what
+  `quakewatch compare` does.
+* **Agreement is not always independent.** EMSC relays solutions from
+  contributing agencies, and some of those are USGS networks (EMSC `auth`
+  values such as `NEIC`, `AK`, `PR`). Those pairs come out with identical time,
+  position and magnitude. In the recorded test fixture 20 of the 60 matched
+  pairs were exact copies of this kind, so a row of `+0.00` differences says
+  less than it appears to.
 * **Coverage is regional.** The USGS feed is dense inside the United States
   (down to below M1 in California and Alaska) but only roughly M4.5+ elsewhere.
   EMSC aggregates many national agencies, so it is much denser for Europe, the
@@ -161,7 +249,8 @@ Things that will surprise you if you treat the two catalogues as interchangeable
   in either catalogue are absent from the other.
 * **Magnitudes are not the same quantity.** Each source publishes its preferred
   magnitude, and the type varies per event (`md`, `ml`, `mb`, `mww`, …).
-  Differences of 0.1-0.3 between the two for the same earthquake are normal.
+  Differences of 0.1-0.3 between the two for the same earthquake are normal,
+  and larger ones occur (0.9 in the recorded fixture).
   EMSC reports one decimal; USGS regional networks often report two.
 * **USGS magnitude tiers are rounded.** The "M2.5+" feed includes an M2.45
   event. `--min-mag` is applied strictly after download, so `--min-mag 2.5`

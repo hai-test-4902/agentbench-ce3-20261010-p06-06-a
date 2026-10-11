@@ -16,7 +16,7 @@ from click.testing import CliRunner
 from quakewatch.cli import cli
 from quakewatch.client import QuakeClient
 from quakewatch.models import FIELD_NAMES, Source
-from quakewatch.output import EVENT_COLUMNS
+from quakewatch.output import EVENT_COLUMNS, MATCH_COLUMNS
 
 pytestmark = pytest.mark.integration
 
@@ -70,3 +70,23 @@ def test_live_cli_export_geojson(tmp_path: Path) -> None:
     assert data["features"]
     expected = set(FIELD_NAMES) - {"lat", "lon"}
     assert all(set(feature["properties"]) == expected for feature in data["features"])
+
+
+def test_live_cli_compare_day(tmp_path: Path) -> None:
+    args = ["compare", "--window", "day", "--cache-dir", str(tmp_path / "cache")]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    summary_block, table_block = result.output.split("\n\n")
+    summary = dict(line.split("\t") for line in summary_block.splitlines())
+    rows = table_block.splitlines()
+    assert rows[0].split("\t") == list(MATCH_COLUMNS)
+    matched = int(summary["matched"])
+    assert matched == len(rows) - 1
+    # On any ordinary day the two global catalogues share at least a few M4+ events.
+    assert matched > 0
+    assert matched + int(summary["usgs_only"]) == int(summary["usgs_events"])
+    assert matched + int(summary["emsc_only"]) == int(summary["emsc_events"])
+    for row in rows[1:]:
+        cells = dict(zip(MATCH_COLUMNS, row.split("\t"), strict=True))
+        assert abs(float(cells["dt_s"])) <= 60
+        assert float(cells["dist_km"]) <= 50
